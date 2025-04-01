@@ -1,0 +1,16 @@
+"0","library(lexRankr)
+"
+"2","
+Attaching package: ‘lexRankr’
+
+"
+"2","The following object is masked from ‘package:tidytext’:
+
+    unnest_sentences
+
+"
+"2","The following object is masked from ‘package:readr’:
+
+    tokenize
+
+"

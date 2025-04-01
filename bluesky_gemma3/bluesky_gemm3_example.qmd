@@ -1,0 +1,335 @@
+---
+title: "Summarizing BlueSky data with LLMs in R"
+subtitle: "R packages to query BlueSky posts and interact with your choice of LLM"
+format:
+  lumo-html: 
+    logo: "profile-pic-removebg-preview.png"       # Optional. Path to a logo displayed above the title
+    github-repo: "https://github.com/madison-merzke" # Optional. Adds a github corner at the top right
+    primary-color: "black"
+    self-contained: true
+    bg-image: "blue_sky.jpg"          # Optional: link to an image for the header background
+author: Madison Merzke, MAS, BPH
+date: last-modified
+---
+
+## Introduction and setup
+
+### Why packages?
+
+One of my favorite aspects of coding in R is the **package**: a bundled collection of functions, datasets, and documentation designed to extend the functionality of R. You can install and load a package by running just a few lines of R code.
+
+Packages enable programmers to make their codes more concise (you can run many lines of code with just one **function** from a package) and easily share useful code they've written.
+
+Maybe most importantly, this also makes R much more accessible to beginners, as they can leverage packages' functions to *execute more advanced tasks without writing all of the nuanced code to do so themselves.*
+
+Cool, right?
+
+### Today: `bskyr` & `ellmer`
+
+This example utilizes functions from two exciting new (to me) packages:
+
+-   `bskyr` for interacting with the BlueSky API and
+
+-   `ellmer` from the tidyverse for interacting with LLMs.
+
+While there is some setup associated with the initial use, once that setup is complete, all of this can be done in RStudio itself.
+
+You can also use `bskyr` to *post* to BlueSky from R!
+
+::: column-margin
+For those interested, `atrrr` appears to be another solid option for interacting with BlueSky from R. I only chose `bskyr` became I came across it first.
+:::
+
+So, let's load those packages!
+
+```{r}
+# install.packages('pacman')
+# pacman loads multiple packages in one step (installs if needed, as well)
+pacman::p_load(
+  tidyverse,
+  bskyr, # to interact with BlueSky API
+  ellmer # to interact with AI model
+)
+
+# https://jbgruber.github.io/atrrr/articles/Basic_Usage.html
+# atrrr package is another option for pulling BlueSky data
+```
+
+### Initial external setup
+
+#### Authenticating BlueSky access
+
+The first time you connect to BlueSky via R, you will need to authenticate the access to your account, as I've done below, inserting your respective handle and app password. You can find more detailed instructions on this process online (such as where to go to get an app password on BlueSky), but it took me only minutes, since I already had a BlueSky account.
+
+The code below, utilizing `set_bluesky_user()` from `bskyr`, is set up to save your credentials in your R environment, so that moving forward you will not need to run those lines.
+
+```{r, eval = F}
+# Authenticate BlueSky account access
+# Only need to run below the first time, then saves to Renviron
+
+set_bluesky_user("username.bsky.social", # INSERT YOUR HANDLE HERE
+  install = T,
+  r_env = file.path(Sys.getenv("HOME"), ".Renviron")
+)
+set_bluesky_pass("XXXX-XXXX-XXXX-XXXX", # INSERT YOUR APP PASSWORD HERE
+  install = T,
+  r_env = file.path(Sys.getenv("HOME"), ".Renviron")
+)
+```
+
+#### Setting up your LLM
+
+For this simple example, I leverage a model called gemma3 through Ollama, which I can query through `ellmer` functions in R. Note that you can also use online LLMs, if you have an account; see `ellmer` documentation. For Ollama, the initial setup included:
+
+1.  Downloading and installing the [Ollama](https://ollama.com/) software, which allows you to run open-source LLMs locally - on your own computer! Thus, this is free, does not require account setup, and keeps your data on your own machine, which is more private.
+2.  Selecting a model for Ollama to run. Note that you may have to consider memory limitations of your machine when selecting a model. My choice for this example, [gemma3](https://ollama.com/library/gemma3), excels at summarization and is under 4 gigabytes.
+3.  Installing the model. I find that the easiest way to install models is through your computer's command prompt, with, for example, `ollama run gemma3`, which will download, install, and initialize the model. Then, you can even "speak" with it through the command prompt, like a very simple AI interface!
+
+## Your R code
+
+Now that our BlueSky access and all of our software is ready, on to the fun part: running R code to pull data from BlueSky and get a summary from the LLM!
+
+If at any point you have additional questions about the packages, their arguments or capabilities, reference their online documentation. This example is not an extensive guide, but a brief illustration.
+
+### Querying BlueSky
+
+First, to get our data from BlueSky, we will use `bs_search_posts()`.
+
+```{r}
+# query to search in posts; if you have a space, it's like an AND
+topic <- "public health"
+# i.e., this will grab posts with 'public health' but also those with
+# 'public' and 'health' separately in the post; both are required but not
+# right next to each other
+# there is likely a way to search more incisively but we'll leave that for
+# another day
+
+# how many posts do you want to pull?
+n_posts_pull <- 20
+
+raw_pull <- bs_search_posts(
+  query = topic,
+  limit = n_posts_pull,
+  sort = "latest" # get the most recent posts
+)
+raw_pull
+```
+
+As you can see, this resulted in a table of 20 observations, as we wanted, but with 13 variables, and some of the variables are lists; it is not clear where the content of the post is located until further examination reveals it is within one of these list-variables. So, I used `modify()` from `purrr` to grab the `text` object from within the `record` list-variable.
+
+```{r}
+# pull out the posts' text content
+text <- modify(raw_pull$record, function(x) x[["text"]]) %>%
+  str_remove_all(pattern = "\n|\r|")
+
+text
+```
+
+But hey, what if we want to analyze the posts' data with some of these other useful columns we were given?
+
+### Tidying the tibble
+
+Let's create a tibble with the counts of likes and whatnot. Plus, maybe we'll filter to the five posts with the most likes?
+
+```{r}
+# how many posts do we want to keep to summarize?
+n_posts_summarize <- 5
+
+# add other cols, filter as desired
+tidied_text <- tibble(
+  text = text, # that actual content
+  when = modify(raw_pull$record, function(x) x[["createdAt"]])
+) %>%
+  bind_cols(raw_pull %>% select(matches("count"))) %>% # add count columns
+  arrange(-like_count) %>% # start with most likes
+  head(n_posts_summarize) # only keep the top n we specified
+
+tidied_text
+```
+
+Now, of the 20 most recent BlueSky posts with the words 'public' and 'health', we've kept the five with the most likes.
+
+### Summarizing with your LLM
+
+Let's ask for our summary with `chat_ollama()` from `ellmer`!
+
+::: callout-important
+To guide the model towards the desired outcome, provide a `system_prompt` argument. If you do not, your results may be more inconsistently formatted, even if you include similar instructions in the later `chat`.
+:::
+
+```{r}
+# https://ellmer.tidyverse.org/reference/chat_ollama.html
+
+chat <- chat_ollama(
+  model = "gemma3",
+  system_prompt = paste0(
+    "You are an assistant to a very  ",
+    "busy professional, to whom you ",
+    "must provide a concise summary ",
+    "of the following information."
+  )
+)
+
+chat$chat(paste0(
+  "Synthesize a short summary paragraph (3-4 sentences total)",
+  " on these posts from BlueSky, from various users.",
+  tidied_text$text %>% paste0(collapse = ". ")
+))
+```
+
+## Putting it all together
+
+So, in a couple steps, we did what we wanted to do! However, what if I want to concisely run those steps several times, with different queries?
+
+### Creating a function
+
+We'll create a **function** called `summarize_bluesky_topic`! Additionally, this keeps the intermediate variables out of our environment, reducing clutter.
+
+```{r}
+# clear environment - all objects
+rm(list = ls())
+
+# create our function - that goes into environment for later use
+summarize_bluesky_topic <- function(topic = "news", # default query
+                                    n_posts_pull = 20, # initial grab of posts
+                                    n_posts_summarize = 5, # summarizes top liked
+                                    include_posts = F) # default to just summary
+{
+  # pull from bluesky
+  raw_pull <- bs_search_posts(
+    query = topic,
+    limit = n_posts_pull,
+    sort = "latest"
+  )
+
+  # pull out the posts' text content
+  text <- modify(raw_pull$record, function(x) x[["text"]]) %>%
+    str_remove_all(pattern = "\n|\r|")
+
+  # add other cols, filter as desired
+  tidied_text <- tibble(
+    text = text,
+    when = modify(raw_pull$record, function(x) x[["createdAt"]])
+  ) %>%
+    bind_cols(raw_pull %>% select(matches("count"))) %>%
+    arrange(-like_count) %>%
+    head(n_posts_summarize)
+
+  chat <- chat_ollama(
+    model = "gemma3",
+    system_prompt = paste0(
+      "You are an assistant to a very  ",
+      "busy professional, to whom you ",
+      "must provide a concise summary ",
+      "of the following information."
+    )
+  )
+  chat$chat(paste0(
+    "Synthesize a short summary paragraph (3-4 sentences total)",
+    " on these posts from BlueSky, from various users.",
+    tidied_text$text %>% paste0(collapse = ". ")
+  ))
+
+  if (include_posts == T) {
+    tidied_text$text
+  }
+}
+```
+
+Now that we have this function set up, we can run that whole process in one line!
+
+```{r}
+# Run with defaults - recent skeets with "news"
+default_run <- summarize_bluesky_topic()
+```
+
+### Vibe check
+
+This is great, but how do we know the LLM is summarizing the posts accurately? We should compare the output to the original posts, of course! I included an argument just for this purpose. Although, of course, **a second run of the function will pull entirely new data**, so we do not expect it to align with what we just saw, especially since there are so many posts with 'news' on BlueSky.
+
+```{r}
+# Run with defaults - recent skeets with "news"
+default_run <- summarize_bluesky_topic(include_posts = T)
+
+# now, we need to print the resultant object, a character vector of the posts
+default_run
+```
+
+OK, that sort of makes sense, based on their content and the lack of additional context. However, is it drawing connections between unrelated news stories?
+
+::: callout-warning
+Don't forget - this pulls social media posts off the internet. So, we are starting with completely unvalidated data, and running it through a complex probabilistic model. Even if the model works well, the information could be completely untrue before it's input. Additionally, the model itself could hallucinate or lack vital context to interpret the information!
+:::
+
+### Additional query examples
+
+::: panel-tabset
+#### Rstats
+
+```{r}
+summarize_bluesky_topic("rstats")
+```
+
+#### Washington Spirit
+
+```{r}
+summarize_bluesky_topic("Washington Spirit")
+```
+
+#### Public Health
+
+```{r}
+summarize_bluesky_topic("public health")
+```
+
+#### Democracy
+
+```{r}
+summarize_bluesky_topic("democracy")
+```
+:::
+
+It seems like more specific topics do better, as the information can be more cohesively combined.
+
+### Increasing the number of posts
+
+More data will typically take longer to run. Let's get rid of the Washington Spirit query, as that one was also pulling political posts.
+
+::: panel-tabset
+#### Rstats
+
+```{r}
+summarize_bluesky_topic("rstats",
+  n_posts_pull = 100,
+  n_posts_summarize = 20
+)
+```
+
+#### Public Health
+
+```{r}
+summarize_bluesky_topic("public health",
+  n_posts_pull = 100,
+  n_posts_summarize = 20
+)
+```
+
+#### Democracy
+
+```{r}
+summarize_bluesky_topic("democracy",
+  n_posts_pull = 100,
+  n_posts_summarize = 20
+)
+```
+:::
+
+Hmm, do you think these outputs have improved, since they are based on more information?
+
+## Conclusion
+
+Well, what do you think? Was our function effective?
+
+Could these techniques be useful in the real world, beyond a fun side project? What concerns do you have about the limitations and ethical implications?
+
+What other ideas do you have for analyzing BlueSky data, beyond simple summarization with an LLM? I wonder if we could track sentiment surrounding a queried subject over time using sentiment analysis.
